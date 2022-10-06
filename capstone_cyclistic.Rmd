@@ -1,0 +1,134 @@
+---
+title: "Cyclistic bike-share data analysis"
+author: "Ilya Semenov"
+date: "2022-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(xml2)
+library(tidyverse)
+library(stringr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+library(scales)
+```
+
+# Problem statement
+
+Based on a [Coursera problem statement document](https://d3c33hcgiwev3.cloudfront.net/aacF81H_TsWnBfNR_x7FIg_36299b28fa0c4a5aba836111daad12f1_DAC8-Case-Study-1.pdf?Expires=1665187200&Signature=H0BPQYIvO2gT32qdFKVqFz4UiOFIwhEsfGOVIptLicPlmiVpAOIiQ3BdI-~pmtiI1cTC9cNjQVVWBU7C8QNDiNDftDL4GvEIR12-3mtK9IhMi3R3fyWiT-Ocjl~ZDNhsoFclPAUicrnI6i0uxh7B3wREe4qXY9vsmowZHwgLctM_&Key-Pair-Id=APKAJLTNE6QMUY6HBC5A) find differences in a bike usage between annual members and casual riders.
+Key stakeholder: Lily Moreno, Cyclistic marketing director.
+
+# Summary
+
+Compared with casual users annual members prefer bike-share usage for **work commuting**. It means preference towards shorter trips with duration 15 minutes and less and more active service usage during weekdays.
+
+# Data preparation
+
+### Data import
+Cyclistic bike-usage data obtained by the following [link](https://divvy-tripdata.s3.amazonaws.com/index.html). Data are credible to Cyclistic exclusively. No signs of bias present. Data are anonymous.
+Data import sequence for years 2021-2022 is as follows:
+
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+fpath <- 'https://divvy-tripdata.s3.amazonaws.com/'
+get_filename <- function(x) {
+  x$Key[[1]][[1]]
+}
+
+files_list <- as_list(read_xml(fpath))
+filenames_list <- unlist(sapply(files_list$ListBucketResult, get_filename))
+
+trips <- data.frame()
+for (filename in filenames_list) {
+  if (str_detect(filename, 'zip') & (str_detect(filename, '2021') | str_detect(filename, '2022'))) { # Get data for 2021 and 2022 only
+    temp <- tempfile()
+    download.file(paste0(fpath, filename), temp)
+    trips <- rbind(trips, read_csv(temp))
+    unlink(temp)
+  }
+}
+```
+
+### Data filtering and preprocessing
+
+Data filtering included following transformations:
+
+* only last 365 days of the bike-share service usage data were taken into account
+* in order to correctly calculate trip duration only records with valid (not NA) started_at and ended_at fields were left
+* trips with duration less than 30 seconds or more than 10 hours were filtered
+* column with trip duration was added
+* column with trip duration bin was added
+
+The code is as follows:
+
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+trips_clean <- trips %>% 
+  mutate(trip_duration = as.numeric(difftime(ended_at, started_at))) %>% 
+  filter(!is.na(trip_duration)) %>% 
+  filter(trip_duration > 29 & trip_duration < 60*60*10) %>%    # drop trips less than 30 seconds and more than 10 hours
+  filter(started_at > max(started_at) - days(365)) %>%  # last 365 days only due to memory limits
+  mutate(trip_duration_bin = case_when(
+    trip_duration < 300 ~ '1: < 5 mins',
+    trip_duration >= 300 & trip_duration < 900 ~ '2: 5-15 mins',
+    trip_duration >= 900 & trip_duration < 1800 ~ '3: 15-30 mins',
+    trip_duration >= 1800 & trip_duration < 3600 ~ '4: 30-60 mins',
+    trip_duration >= 3600 & trip_duration < 7200 ~ '5: 1-2 hours',
+    trip_duration >= 7200 ~ '6: > 2 hours'
+  )) # set bins for trip durations
+
+rm(trips) # clean memory
+```
+
+### Data preparation and processing step resume
+
+The only datasource used for the analysis is the Cyclistic bike-usage dataset.
+
+# Data analysis
+
+### Weekly usage
+
+Casual users tend to use the service more on holidays while annual members prefer service usage on weekdays. It's suggests the hypothesis of annual members use the service fo **work commuting**.
+Total weekly usage is as follows:
+
+```{r include=TRUE, echo=TRUE, message=TRUE, warning=FALSE}
+table(wday(trips_clean$started_at, label = TRUE, locale = 'en_US.UTF8'), trips_clean$member_casual)
+```
+
+### Trip duration preferences, members vs. casual
+
+```{r include=TRUE, echo=TRUE, message=TRUE, warning=FALSE}
+ggplot(data = trips_clean, aes(x = wday(started_at, label = TRUE, locale = 'en_US.UTF8'), fill = trip_duration_bin)) +
+  geom_bar() +
+  facet_wrap(~member_casual) +
+  scale_y_continuous(labels = number) +
+  xlab('') +
+  ylab('Rides count') +
+  labs(caption = 'Source: Cyclistic bike-share dataset, last 365 days usage')
+```
+
+Annual members prefer short trips on weekdays, one more argument in favor of **commuting** hypothesis.
+
+### Trip duration preferences by vehicle type
+
+```{r include=TRUE, echo=TRUE, message=TRUE, warning=FALSE}
+ggplot(data = trips_clean, aes(x = trip_duration_bin)) + 
+  geom_histogram(stat = 'count') +
+  facet_wrap(~member_casual + rideable_type) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  scale_y_continuous(labels = number) +
+  xlab('Trip duration bin') +
+  ylab('Rides') +
+  labs(title = 'Number of rides by duration and rider type', caption = 'Source: Cyclistic bike-share dataset, last 365 days usage')
+```
+
+Annual members preference towards short rides is valid both for classic and electric bikes. **Commuting** support argument #3.
+
+# Recommendations
+
+According to the analysis the marketing recommendations for Cyclicist are as follows:
+
+* focus on casual users who often make short trips (30 minutes and less) on weekdays, propose annual subscription
+* design a special annual program for casual electric bike usage since the service consumption pattern for electric bikes is very similar for both casual users and annual members
+* consider special offer design for casual users who like to take long trips (more than 1 hour) on holydays
